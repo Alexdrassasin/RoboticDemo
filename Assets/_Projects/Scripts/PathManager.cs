@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
-using static UnityEngine.GraphicsBuffer;
 
 public class PathManager : MonoBehaviour
 {
@@ -11,6 +10,7 @@ public class PathManager : MonoBehaviour
     public GameObject targetObject;
     public GameObject moverObject;
     public float speed = 5f;
+    [Range(0.05f,1f)]
     public float density = 0.1f;
     public Button generatePathButton, startButton;
     public Transform pathPointsContainer;
@@ -19,8 +19,8 @@ public class PathManager : MonoBehaviour
 
     public List<Vector3> orderedPath;
     public int currentTargetIndex = 0;
-
     public bool CanMove = false;
+
     private void Start()
     {
         InitialPosition_Mover = moverObject.transform.position;
@@ -30,34 +30,40 @@ public class PathManager : MonoBehaviour
     {
         if (CanMove)
         {
-            if (orderedPath.Count > 0 && currentTargetIndex < orderedPath.Count)
+            if(orderedPath.Count > 0 && currentTargetIndex < orderedPath.Count)
             {
                 Vector3 targetPosition = orderedPath[currentTargetIndex];
-                Debug.Log(targetPosition);
                 moverObject.transform.position = Vector3.MoveTowards(moverObject.transform.position, targetPosition, speed * Time.deltaTime);
 
                 if (Vector3.Distance(moverObject.transform.position, targetPosition) < 0.1f)
                 {
-                    currentTargetIndex++; // Move to the next point
+                    currentTargetIndex++;
                 }
             }
+            else
+            {
+                CanMove = false;
+            }
         }
-
     }
 
     public void StartMoving()
     {
         CanMove = false;
         currentTargetIndex = 0;
-        moverObject.transform.DOMove(InitialPosition_Mover, 0.5f, true).OnComplete(() =>
+        Vector3 startPosition = orderedPath.Count > 0 ? orderedPath[0] : InitialPosition_Mover;
+        float travelTime = Vector3.Distance(moverObject.transform.position, startPosition) / speed; // Speed-based duration
+
+        moverObject.transform.DOMove(startPosition, travelTime, false).SetEase(Ease.Linear).OnComplete(() =>
         {
             CanMove = true;
         });
+
     }
 
     public void GeneratePathPoints()
     {
-        // Disable and return old path points to the pool
+        // Clear previous points
         foreach (Transform child in pathPointsContainer)
         {
             pathPointPool.Enqueue(child.gameObject);
@@ -66,64 +72,41 @@ public class PathManager : MonoBehaviour
 
         Mesh mesh = targetObject.GetComponent<MeshFilter>().mesh;
         Vector3[] vertices = mesh.vertices;
-        Vector3[] worldVertices = new Vector3[vertices.Length];
-        for (int i = 0; i < vertices.Length; i++)
-        {
-            worldVertices[i] = targetObject.transform.TransformPoint(vertices[i]);
-        }
+        List<Vector3> worldVertices = vertices.Select(v => targetObject.transform.TransformPoint(v)).ToList();
 
-        // Generate new path points
-        for (int i = 0; i < density; i++)
-        {
-            int index = Mathf.FloorToInt(i * (vertices.Length / (float)density));
-            Vector3 pointPosition = worldVertices[index];
+        //  Dynamic Density-Based Sampling
+        int sampleCount = Mathf.Max(1, Mathf.FloorToInt(worldVertices.Count * density));
+        List<Vector3> sampledPoints = worldVertices.OrderBy(p => p.x).Take(sampleCount).ToList();
 
+        foreach (Vector3 pointPosition in sampledPoints)
+        {
             GameObject pathPoint = GetPathPointFromPool();
             pathPoint.transform.position = pointPosition;
-            pathPoint.transform.rotation = Quaternion.identity;
-            pathPoint.SetActive(true);  // Enable the point
+            pathPoint.SetActive(true);
         }
 
-        SortPoints();
+        SortPoints(sampledPoints);
     }
 
     GameObject GetPathPointFromPool()
     {
-        if (pathPointPool.Count > 0)
-        {
-            return pathPointPool.Dequeue();
-        }
-        else
-        {
-            // If the pool is empty, instantiate a new point
-            return Instantiate(pathPointPrefab, pathPointsContainer);
-        }
+        return pathPointPool.Count > 0 ? pathPointPool.Dequeue() : Instantiate(pathPointPrefab, pathPointsContainer);
     }
 
     #region Path Sorting
-    public void SortPoints()
+    public void SortPoints(List<Vector3> pathPoints)
     {
         orderedPath.Clear();
-        List<Vector3> pathPoints = new List<Vector3>();
 
-        // Collect all path points
-        foreach (Transform child in pathPointsContainer)
-        {
-            pathPoints.Add(child.position);
-        }
-
-        // Sort all points by Z (depth order) to organize them into rows
-        pathPoints = pathPoints.OrderBy(p => p.z).ToList();
-
+        //  Auto-Adjust Row Detection Based on Density
+        float dynamicThreshold = Mathf.Max(0.05f, 0.2f * density); // Adjust spacing dynamically
         List<List<Vector3>> rows = new List<List<Vector3>>();
-        float threshold = 0.1f;  // Adjust based on mesh density
-
         List<Vector3> currentRow = new List<Vector3>();
         float lastZ = pathPoints[0].z;
 
-        foreach (Vector3 point in pathPoints)
+        foreach (Vector3 point in pathPoints.OrderBy(p => p.z))
         {
-            if (Mathf.Abs(point.z - lastZ) > threshold)
+            if (Mathf.Abs(point.z - lastZ) > dynamicThreshold)
             {
                 rows.Add(new List<Vector3>(currentRow));
                 currentRow.Clear();
@@ -132,29 +115,19 @@ public class PathManager : MonoBehaviour
             currentRow.Add(point);
             lastZ = point.z;
         }
+        if (currentRow.Count > 0) rows.Add(currentRow);
 
-        if (currentRow.Count > 0)
-        {
-            rows.Add(currentRow);
-        }
-
-        // Zigzag ordering: Reverse every second row to create U-turns
+        //  Ensure Zigzag Traversal Without Crossing
         for (int i = 0; i < rows.Count; i++)
         {
-            rows[i] = rows[i].OrderBy(p => p.x).ToList();  // Sort row points by X-axis
-
-            if (i % 2 == 1)
-            {
-                rows[i].Reverse();  // Reverse odd-indexed rows for U-turn effect
-            }
+            rows[i] = rows[i].OrderBy(p => p.x).ToList();
+            if (i % 2 == 1) rows[i].Reverse(); // U-turn effect
         }
 
-        // Flatten the list into orderedPath
         foreach (var row in rows)
         {
             orderedPath.AddRange(row);
         }
     }
-
     #endregion
 }
