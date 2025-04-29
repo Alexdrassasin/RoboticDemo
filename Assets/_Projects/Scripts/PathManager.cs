@@ -23,9 +23,10 @@ public class PathManager : MonoBehaviour
 
     // LineRenderer for path visualization
     private LineRenderer pathLineRenderer;
-    public bool showPath = true; // Toggle to show/hide the path visualization
-    public float lineWidth = 0.05f; // Width of the line
-    public Color lineColor = Color.green; // Color of the line
+    public bool showPath = true;
+    public float lineWidth = 0.05f;
+    public Color passedColor = Color.red; // Color for passed segments
+    public Color unpassedColor = Color.green; // Color for unpassed segments
 
     private void Start()
     {
@@ -33,12 +34,11 @@ public class PathManager : MonoBehaviour
 
         // Initialize LineRenderer
         pathLineRenderer = gameObject.AddComponent<LineRenderer>();
-        pathLineRenderer.positionCount = 0; // Start with no points
+        pathLineRenderer.positionCount = 0;
         pathLineRenderer.startWidth = lineWidth;
         pathLineRenderer.endWidth = lineWidth;
-        pathLineRenderer.material = new Material(Shader.Find("Sprites/Default")); // Simple material
-        pathLineRenderer.startColor = lineColor;
-        pathLineRenderer.endColor = lineColor;
+        pathLineRenderer.material = new Material(Shader.Find("Sprites/Default"));
+        pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor); // Default to all green
     }
 
     private void Update()
@@ -53,7 +53,11 @@ public class PathManager : MonoBehaviour
                 if (Vector3.Distance(moverObject.transform.position, targetPosition) < 0.1f)
                 {
                     currentTargetIndex++;
+                    UpdateLineColors(); // Update colors when reaching a new point
                 }
+
+                // Update colors during movement for smooth transition
+                UpdateLineColors();
             }
             else
             {
@@ -69,6 +73,12 @@ public class PathManager : MonoBehaviour
         Vector3 startPosition = orderedPath.Count > 0 ? orderedPath[0] : InitialPosition_Mover;
         float travelTime = Vector3.Distance(moverObject.transform.position, startPosition) / speed;
 
+        // Reset all lines to green
+        if (showPath && orderedPath.Count > 1)
+        {
+            pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor);
+        }
+
         moverObject.transform.DOMove(startPosition, travelTime, false).SetEase(Ease.Linear).OnComplete(() =>
         {
             CanMove = true;
@@ -77,14 +87,12 @@ public class PathManager : MonoBehaviour
 
     public void GeneratePathPoints()
     {
-        // Clear previous points
         foreach (Transform child in pathPointsContainer)
         {
             pathPointPool.Enqueue(child.gameObject);
             child.gameObject.SetActive(false);
         }
 
-        // Clear the LineRenderer
         pathLineRenderer.positionCount = 0;
 
         Mesh mesh = targetObject.GetComponent<MeshFilter>().mesh;
@@ -213,6 +221,56 @@ public class PathManager : MonoBehaviour
         return pathPointPool.Count > 0 ? pathPointPool.Dequeue() : Instantiate(pathPointPrefab, pathPointsContainer);
     }
 
+    // Helper method to create a gradient for the LineRenderer
+    private Gradient CreateGradient(Color startColor, Color endColor)
+    {
+        Gradient gradient = new Gradient();
+        gradient.SetKeys(
+            new GradientColorKey[] { new GradientColorKey(startColor, 0f), new GradientColorKey(endColor, 1f) },
+            new GradientAlphaKey[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(1f, 1f) }
+        );
+        return gradient;
+    }
+
+    // Update the LineRenderer colors based on the currentTargetIndex
+    private void UpdateLineColors()
+    {
+        if (!showPath || orderedPath.Count < 2) return;
+
+        Gradient gradient = new Gradient();
+        List<GradientColorKey> colorKeys = new List<GradientColorKey>();
+        List<GradientAlphaKey> alphaKeys = new List<GradientAlphaKey>();
+
+        // Calculate the fraction of the path completed
+        float fractionPerPoint = 1f / (orderedPath.Count - 1);
+        float currentFraction = currentTargetIndex * fractionPerPoint;
+
+        // Determine the fraction of the current segment the mover has traveled
+        if (currentTargetIndex < orderedPath.Count - 1)
+        {
+            Vector3 currentPos = moverObject.transform.position;
+            Vector3 startPos = orderedPath[currentTargetIndex];
+            Vector3 endPos = orderedPath[currentTargetIndex + 1];
+            float segmentDistance = Vector3.Distance(startPos, endPos);
+            float traveledDistance = Vector3.Distance(startPos, currentPos);
+            float segmentFraction = segmentDistance > 0 ? traveledDistance / segmentDistance : 0;
+            currentFraction += segmentFraction * fractionPerPoint;
+        }
+
+        // Set color keys: red up to the current fraction, green after
+        colorKeys.Add(new GradientColorKey(passedColor, 0f));
+        colorKeys.Add(new GradientColorKey(passedColor, currentFraction));
+        colorKeys.Add(new GradientColorKey(unpassedColor, currentFraction));
+        colorKeys.Add(new GradientColorKey(unpassedColor, 1f));
+
+        // Set alpha keys (fully opaque)
+        alphaKeys.Add(new GradientAlphaKey(1f, 0f));
+        alphaKeys.Add(new GradientAlphaKey(1f, 1f));
+
+        gradient.SetKeys(colorKeys.ToArray(), alphaKeys.ToArray());
+        pathLineRenderer.colorGradient = gradient;
+    }
+
     #region Path Sorting
     public void SortPoints(List<Vector3> pathPoints)
     {
@@ -288,15 +346,15 @@ public class PathManager : MonoBehaviour
             orderedPath.AddRange(sortedRow);
         }
 
-        // Update the LineRenderer to visualize the path
         if (showPath && orderedPath.Count > 1)
         {
             pathLineRenderer.positionCount = orderedPath.Count;
             pathLineRenderer.SetPositions(orderedPath.ToArray());
+            pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor); // Start with all green
         }
         else
         {
-            pathLineRenderer.positionCount = 0; // Hide the line if showPath is false or not enough points
+            pathLineRenderer.positionCount = 0;
         }
     }
 
