@@ -246,7 +246,7 @@ public class PathManager : MonoBehaviour
         float currentFraction = currentTargetIndex * fractionPerPoint;
 
         // Determine the fraction of the current segment the mover has traveled
-        if (currentTargetIndex < orderedPath.Count - 1)
+/*        if (currentTargetIndex < orderedPath.Count - 1)
         {
             Vector3 currentPos = moverObject.transform.position;
             Vector3 startPos = orderedPath[currentTargetIndex];
@@ -255,7 +255,7 @@ public class PathManager : MonoBehaviour
             float traveledDistance = Vector3.Distance(startPos, currentPos);
             float segmentFraction = segmentDistance > 0 ? traveledDistance / segmentDistance : 0;
             currentFraction += segmentFraction * fractionPerPoint;
-        }
+        }*/
 
         // Set color keys: red up to the current fraction, green after
         colorKeys.Add(new GradientColorKey(passedColor, 0f));
