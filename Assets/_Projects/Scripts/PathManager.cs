@@ -21,24 +21,32 @@ public class PathManager : MonoBehaviour
     public int currentTargetIndex = 0;
     public bool CanMove = false;
 
-    // LineRenderer for path visualization
     private LineRenderer pathLineRenderer;
     public bool showPath = true;
     public float lineWidth = 0.05f;
-    public Color passedColor = Color.red; // Color for passed segments
-    public Color unpassedColor = Color.green; // Color for unpassed segments
+    public Color passedColor = Color.red;
+    public Color unpassedColor = Color.green;
+    public Color pulseColor = Color.white;
+
+    // Pulsing effect variables
+    private bool isPulsing = false;
+    public float pulseSpeed = 2f;
+    public float pulseWidth = 0.3f;
+    private float pulseTime = 0f;
+
+    // Offset variable
+    public float offsetFromSurface = 0.1f; // Distance to offset points from the surface along the normal
 
     private void Start()
     {
         InitialPosition_Mover = moverObject.transform.position;
 
-        // Initialize LineRenderer
         pathLineRenderer = gameObject.AddComponent<LineRenderer>();
         pathLineRenderer.positionCount = 0;
         pathLineRenderer.startWidth = lineWidth;
         pathLineRenderer.endWidth = lineWidth;
         pathLineRenderer.material = new Material(Shader.Find("Sprites/Default"));
-        pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor); // Default to all green
+        pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor);
     }
 
     private void Update()
@@ -53,27 +61,37 @@ public class PathManager : MonoBehaviour
                 if (Vector3.Distance(moverObject.transform.position, targetPosition) < 0.1f)
                 {
                     currentTargetIndex++;
-                    UpdateLineColors(); // Update colors when reaching a new point
+                    UpdateLineColors();
                 }
 
-                // Update colors during movement for smooth transition
                 UpdateLineColors();
             }
             else
             {
                 CanMove = false;
+                Vector3 startPosition = InitialPosition_Mover;
+                float travelTime = Vector3.Distance(moverObject.transform.position, startPosition) / speed;
+                MoveToStartPositionTween = moverObject.transform.DOMove(startPosition, travelTime, false).SetEase(Ease.Linear);
             }
+        }
+
+        if (isPulsing && showPath && orderedPath.Count > 1)
+        {
+            pulseTime += Time.deltaTime * pulseSpeed;
+            UpdatePulseEffect();
         }
     }
 
     public void StartMoving()
     {
         CanMove = false;
+        MoveToStartPositionTween.Kill();
+        MoveToStartPositionTween = null;
         currentTargetIndex = 0;
         Vector3 startPosition = orderedPath.Count > 0 ? orderedPath[0] : InitialPosition_Mover;
         float travelTime = Vector3.Distance(moverObject.transform.position, startPosition) / speed;
 
-        // Reset all lines to green
+        isPulsing = false;
         if (showPath && orderedPath.Count > 1)
         {
             pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor);
@@ -85,8 +103,15 @@ public class PathManager : MonoBehaviour
         });
     }
 
+    private Tween MoveToStartPositionTween;
+
     public void GeneratePathPoints()
     {
+        CanMove = false;
+        Vector3 startPosition = InitialPosition_Mover;
+        float travelTime = Vector3.Distance(moverObject.transform.position, startPosition) / speed;
+        MoveToStartPositionTween = moverObject.transform.DOMove(startPosition, travelTime, false).SetEase(Ease.Linear);
+
         foreach (Transform child in pathPointsContainer)
         {
             pathPointPool.Enqueue(child.gameObject);
@@ -97,8 +122,17 @@ public class PathManager : MonoBehaviour
 
         Mesh mesh = targetObject.GetComponent<MeshFilter>().mesh;
         Vector3[] vertices = mesh.vertices;
+        Vector3[] normals = mesh.normals; // Get the vertex normals
 
         List<Vector3> worldVertices = vertices.Select(v => targetObject.transform.TransformPoint(v)).ToList();
+        // Transform normals to world space
+        List<Vector3> worldNormals = new List<Vector3>();
+        for (int i = 0; i < normals.Length; i++)
+        {
+            // Transform the normal to world space, ensuring no scaling affects the direction
+            Vector3 worldNormal = targetObject.transform.TransformDirection(normals[i]).normalized;
+            worldNormals.Add(worldNormal);
+        }
 
         if (worldVertices.Count == 0)
         {
@@ -153,16 +187,21 @@ public class PathManager : MonoBehaviour
         float cellHeight = rangeAxis2 / gridHeight;
 
         List<Vector3>[,] grid = new List<Vector3>[gridWidth, gridHeight];
+        List<Vector3>[,] normalGrid = new List<Vector3>[gridWidth, gridHeight]; // To store normals for each grid cell
         for (int i = 0; i < gridWidth; i++)
         {
             for (int j = 0; j < gridHeight; j++)
             {
                 grid[i, j] = new List<Vector3>();
+                normalGrid[i, j] = new List<Vector3>();
             }
         }
 
-        foreach (Vector3 vertex in worldVertices)
+        for (int i = 0; i < worldVertices.Count; i++)
         {
+            Vector3 vertex = worldVertices[i];
+            Vector3 normal = worldNormals[i];
+
             float value1 = axis1 == "X" ? vertex.x : axis1 == "Y" ? vertex.y : vertex.z;
             float value2 = axis2 == "X" ? vertex.x : axis2 == "Y" ? vertex.y : vertex.z;
 
@@ -173,9 +212,11 @@ public class PathManager : MonoBehaviour
             gridY = Mathf.Clamp(gridY, 0, gridHeight - 1);
 
             grid[gridX, gridY].Add(vertex);
+            normalGrid[gridX, gridY].Add(normal);
         }
 
         List<Vector3> sampledPoints = new List<Vector3>();
+        List<Vector3> sampledNormals = new List<Vector3>(); // To store the average normal for each sampled point
         for (int i = 0; i < gridWidth; i++)
         {
             for (int j = 0; j < gridHeight; j++)
@@ -183,12 +224,19 @@ public class PathManager : MonoBehaviour
                 if (grid[i, j].Count > 0)
                 {
                     Vector3 averagePosition = Vector3.zero;
+                    Vector3 averageNormal = Vector3.zero;
                     foreach (Vector3 vertex in grid[i, j])
                     {
                         averagePosition += vertex;
                     }
+                    foreach (Vector3 normal in normalGrid[i, j])
+                    {
+                        averageNormal += normal;
+                    }
                     averagePosition /= grid[i, j].Count;
+                    averageNormal = (averageNormal / normalGrid[i, j].Count).normalized; // Normalize the average normal
                     sampledPoints.Add(averagePosition);
+                    sampledNormals.Add(averageNormal);
                 }
             }
         }
@@ -199,21 +247,35 @@ public class PathManager : MonoBehaviour
             if (sampledPoints.Count == 1)
             {
                 sampledPoints.Add(worldVertices[worldVertices.Count - 1]);
+                sampledNormals.Add(worldNormals[worldNormals.Count - 1]);
             }
             else
             {
                 sampledPoints.AddRange(worldVertices.Take(2));
+                sampledNormals.AddRange(worldNormals.Take(2));
             }
         }
 
-        foreach (Vector3 pointPosition in sampledPoints)
+        // Apply offset along the normal and instantiate path points
+        for (int i = 0; i < sampledPoints.Count; i++)
         {
+            Vector3 pointPosition = sampledPoints[i];
+            Vector3 normal = sampledNormals[i];
+            // Offset the point along the normal by the specified distance
+            pointPosition += normal * offsetFromSurface;
+
             GameObject pathPoint = GetPathPointFromPool();
             pathPoint.transform.position = pointPosition;
             pathPoint.SetActive(true);
+
+            // Update the sampledPoints list with the offset position for path generation
+            sampledPoints[i] = pointPosition;
         }
 
         SortPoints(sampledPoints);
+
+        isPulsing = true;
+        pulseTime = 0f;
     }
 
     GameObject GetPathPointFromPool()
@@ -221,7 +283,6 @@ public class PathManager : MonoBehaviour
         return pathPointPool.Count > 0 ? pathPointPool.Dequeue() : Instantiate(pathPointPrefab, pathPointsContainer);
     }
 
-    // Helper method to create a gradient for the LineRenderer
     private Gradient CreateGradient(Color startColor, Color endColor)
     {
         Gradient gradient = new Gradient();
@@ -232,7 +293,6 @@ public class PathManager : MonoBehaviour
         return gradient;
     }
 
-    // Update the LineRenderer colors based on the currentTargetIndex
     private void UpdateLineColors()
     {
         if (!showPath || orderedPath.Count < 2) return;
@@ -241,29 +301,52 @@ public class PathManager : MonoBehaviour
         List<GradientColorKey> colorKeys = new List<GradientColorKey>();
         List<GradientAlphaKey> alphaKeys = new List<GradientAlphaKey>();
 
-        // Calculate the fraction of the path completed
         float fractionPerPoint = 1f / (orderedPath.Count - 1);
         float currentFraction = currentTargetIndex * fractionPerPoint;
 
-        // Determine the fraction of the current segment the mover has traveled
-/*        if (currentTargetIndex < orderedPath.Count - 1)
-        {
-            Vector3 currentPos = moverObject.transform.position;
-            Vector3 startPos = orderedPath[currentTargetIndex];
-            Vector3 endPos = orderedPath[currentTargetIndex + 1];
-            float segmentDistance = Vector3.Distance(startPos, endPos);
-            float traveledDistance = Vector3.Distance(startPos, currentPos);
-            float segmentFraction = segmentDistance > 0 ? traveledDistance / segmentDistance : 0;
-            currentFraction += segmentFraction * fractionPerPoint;
-        }*/
-
-        // Set color keys: red up to the current fraction, green after
         colorKeys.Add(new GradientColorKey(passedColor, 0f));
         colorKeys.Add(new GradientColorKey(passedColor, currentFraction));
         colorKeys.Add(new GradientColorKey(unpassedColor, currentFraction));
         colorKeys.Add(new GradientColorKey(unpassedColor, 1f));
 
-        // Set alpha keys (fully opaque)
+        alphaKeys.Add(new GradientAlphaKey(1f, 0f));
+        alphaKeys.Add(new GradientAlphaKey(1f, 1f));
+
+        gradient.SetKeys(colorKeys.ToArray(), alphaKeys.ToArray());
+        pathLineRenderer.colorGradient = gradient;
+    }
+
+    private void UpdatePulseEffect()
+    {
+        Gradient gradient = new Gradient();
+        List<GradientColorKey> colorKeys = new List<GradientColorKey>();
+        List<GradientAlphaKey> alphaKeys = new List<GradientAlphaKey>();
+
+        float pulsePosition = (pulseTime % 1f);
+        float pulseStart = pulsePosition - pulseWidth / 2f;
+        float pulseEnd = pulsePosition + pulseWidth / 2f;
+
+        pulseStart = Mathf.Clamp(pulseStart, 0f, 1f);
+        pulseEnd = Mathf.Clamp(pulseEnd, 0f, 1f);
+
+        if (pulseStart > 0f)
+        {
+            colorKeys.Add(new GradientColorKey(unpassedColor, 0f));
+            colorKeys.Add(new GradientColorKey(unpassedColor, pulseStart));
+        }
+
+        if (pulseStart < pulseEnd)
+        {
+            colorKeys.Add(new GradientColorKey(pulseColor, pulseStart));
+            colorKeys.Add(new GradientColorKey(pulseColor, pulseEnd));
+        }
+
+        if (pulseEnd < 1f)
+        {
+            colorKeys.Add(new GradientColorKey(unpassedColor, pulseEnd));
+            colorKeys.Add(new GradientColorKey(unpassedColor, 1f));
+        }
+
         alphaKeys.Add(new GradientAlphaKey(1f, 0f));
         alphaKeys.Add(new GradientAlphaKey(1f, 1f));
 
@@ -350,7 +433,7 @@ public class PathManager : MonoBehaviour
         {
             pathLineRenderer.positionCount = orderedPath.Count;
             pathLineRenderer.SetPositions(orderedPath.ToArray());
-            pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor); // Start with all green
+            pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor);
         }
         else
         {
