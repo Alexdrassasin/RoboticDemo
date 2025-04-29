@@ -6,6 +6,7 @@ using UnityEngine.UI;
 
 public class PathManager : MonoBehaviour
 {
+
     public GameObject pathPointPrefab;
     public GameObject targetObject;
     public GameObject moverObject;
@@ -72,9 +73,11 @@ public class PathManager : MonoBehaviour
 
         Mesh mesh = targetObject.GetComponent<MeshFilter>().mesh;
         Vector3[] vertices = mesh.vertices;
-        List<Vector3> worldVertices = vertices.Select(v => targetObject.transform.TransformPoint(v)).ToList();
+
+
 
         //  Dynamic Density-Based Sampling
+        List<Vector3> worldVertices = vertices.Select(v => targetObject.transform.TransformPoint(v)).ToList();
         int sampleCount = Mathf.Max(1, Mathf.FloorToInt(worldVertices.Count * density));
         List<Vector3> sampledPoints = worldVertices.OrderBy(p => p.x).Take(sampleCount).ToList();
 
@@ -98,36 +101,92 @@ public class PathManager : MonoBehaviour
     {
         orderedPath.Clear();
 
-        //  Auto-Adjust Row Detection Based on Density
-        float dynamicThreshold = Mathf.Max(0.05f, 0.2f * density); // Adjust spacing dynamically
+        // Automatically Determine Major Axis for Sorting
+        Vector3 minBounds = new Vector3(
+            pathPoints.Min(p => p.x),
+            pathPoints.Min(p => p.y),
+            pathPoints.Min(p => p.z)
+        );
+
+        Vector3 maxBounds = new Vector3(
+            pathPoints.Max(p => p.x),
+            pathPoints.Max(p => p.y),
+            pathPoints.Max(p => p.z)
+        );
+
+        Vector3 boundsRange = maxBounds - minBounds;
+
+        // Find dominant axis (largest range)
+        string dominantAxis = (boundsRange.x > boundsRange.y && boundsRange.x > boundsRange.z) ? "X" :
+                             (boundsRange.y > boundsRange.x && boundsRange.y > boundsRange.z) ? "Y" : "Z";
+
+        Debug.Log("DominantAxis: " + dominantAxis);
+        // Dynamic Row Detection
+        float maxRange = Mathf.Max(boundsRange.x, boundsRange.y, boundsRange.z);
+
+        //Calculate Threshold
+        var sortedDominantValues = pathPoints
+    .Select(p => GetAxisValue(p, dominantAxis))
+    .OrderBy(v => v)
+    .ToList();
+
+        // Compute average spacing between consecutive dominant axis values
+        float totalSpacing = 0f;
+        for (int i = 1; i < sortedDominantValues.Count; i++)
+        {
+            totalSpacing += Mathf.Abs(sortedDominantValues[i] - sortedDominantValues[i - 1]);
+        }
+        float avgSpacing = totalSpacing / Mathf.Max(1, sortedDominantValues.Count - 1);
+
+        // Now use that as a dynamic threshold multiplier
+        float dynamicThreshold = avgSpacing * 1.5f;
+
+        Debug.Log(dynamicThreshold);
+
         List<List<Vector3>> rows = new List<List<Vector3>>();
         List<Vector3> currentRow = new List<Vector3>();
-        float lastZ = pathPoints[0].z;
+        float lastAxisValue = GetAxisValue(pathPoints[0], dominantAxis);
 
-        foreach (Vector3 point in pathPoints.OrderBy(p => p.z))
+        foreach (Vector3 point in pathPoints.OrderBy(p => GetAxisValue(p, dominantAxis)))
         {
-            if (Mathf.Abs(point.z - lastZ) > dynamicThreshold)
+            if (Mathf.Abs(GetAxisValue(point, dominantAxis) - lastAxisValue) > dynamicThreshold)
             {
                 rows.Add(new List<Vector3>(currentRow));
                 currentRow.Clear();
             }
 
             currentRow.Add(point);
-            lastZ = point.z;
+            lastAxisValue = GetAxisValue(point, dominantAxis);
         }
         if (currentRow.Count > 0) rows.Add(currentRow);
 
-        //  Ensure Zigzag Traversal Without Crossing
+        // Corrected ] Shaped Traversal with Alternating Direction
         for (int i = 0; i < rows.Count; i++)
         {
-            rows[i] = rows[i].OrderBy(p => p.x).ToList();
-            if (i % 2 == 1) rows[i].Reverse(); // U-turn effect
-        }
+            // Determine secondary axis for sorting within the row (perpendicular to dominant axis)
+            string secondaryAxis = dominantAxis == "X" ? (boundsRange.y > boundsRange.z ? "Y" : "Z") :
+                                  dominantAxis == "Y" ? (boundsRange.x > boundsRange.z ? "X" : "Z") :
+                                  (boundsRange.x > boundsRange.y ? "X" : "Y");
 
-        foreach (var row in rows)
-        {
-            orderedPath.AddRange(row);
+            // Sort row by secondary axis
+            var sortedRow = rows[i].OrderBy(p => GetAxisValue(p, secondaryAxis)).ToList();
+
+            // Reverse every other row (e.g., even-indexed rows go forward, odd-indexed rows go backward)
+            if (i % 2 == 1)
+            {
+                sortedRow.Reverse();
+            }
+
+            orderedPath.AddRange(sortedRow); // Add row to the path
         }
     }
+
+    // Helper function to get value for the dominant axis
+    private float GetAxisValue(Vector3 point, string axis)
+    {
+        return axis == "X" ? point.x : axis == "Y" ? point.y : point.z;
+    }
+
+
     #endregion
 }
