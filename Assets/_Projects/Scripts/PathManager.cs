@@ -64,7 +64,7 @@ public class PathManager : MonoBehaviour
                     UpdateLineColors();
                 }
 
-                UpdateLineColors();
+                //UpdateLineColors();
             }
             else
             {
