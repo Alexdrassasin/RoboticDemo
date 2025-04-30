@@ -112,6 +112,7 @@ public class PathManager : MonoBehaviour
         float travelTime = Vector3.Distance(moverObject.transform.position, startPosition) / speed;
         MoveToStartPositionTween = moverObject.transform.DOMove(startPosition, travelTime, false).SetEase(Ease.Linear);
 
+        // Clear existing path points
         foreach (Transform child in pathPointsContainer)
         {
             pathPointPool.Enqueue(child.gameObject);
@@ -120,16 +121,16 @@ public class PathManager : MonoBehaviour
 
         pathLineRenderer.positionCount = 0;
 
+        // Get mesh data
         Mesh mesh = targetObject.GetComponent<MeshFilter>().mesh;
         Vector3[] vertices = mesh.vertices;
-        Vector3[] normals = mesh.normals; // Get the vertex normals
+        Vector3[] normals = mesh.normals;
 
+        // Convert to world space
         List<Vector3> worldVertices = vertices.Select(v => targetObject.transform.TransformPoint(v)).ToList();
-        // Transform normals to world space
         List<Vector3> worldNormals = new List<Vector3>();
         for (int i = 0; i < normals.Length; i++)
         {
-            // Transform the normal to world space, ensuring no scaling affects the direction
             Vector3 worldNormal = targetObject.transform.TransformDirection(normals[i]).normalized;
             worldNormals.Add(worldNormal);
         }
@@ -140,6 +141,7 @@ public class PathManager : MonoBehaviour
             return;
         }
 
+        // Calculate bounding box
         Vector3 minBounds = new Vector3(
             worldVertices.Min(p => p.x),
             worldVertices.Min(p => p.y),
@@ -152,95 +154,168 @@ public class PathManager : MonoBehaviour
         );
         Vector3 boundsRange = maxBounds - minBounds;
 
-        string axis1, axis2, fixedAxis;
-        if (boundsRange.x <= boundsRange.y && boundsRange.x <= boundsRange.z)
-        {
-            axis1 = "Y";
-            axis2 = "Z";
-            fixedAxis = "X";
-        }
-        else if (boundsRange.y <= boundsRange.x && boundsRange.y <= boundsRange.z)
-        {
-            axis1 = "X";
-            axis2 = "Z";
-            fixedAxis = "Y";
-        }
-        else
-        {
-            axis1 = "X";
-            axis2 = "Y";
-            fixedAxis = "Z";
-        }
-
-        Debug.Log($"Dominant plane: {axis1}-{axis2}, fixed axis: {fixedAxis}");
+        // Determine if the surface is 2D-like (small range in one axis)
+        bool is2D = boundsRange.x <= 0.1f || boundsRange.y <= 0.1f || boundsRange.z <= 0.1f;
 
         int totalVertices = worldVertices.Count;
         int desiredPointCount = Mathf.Max(2, Mathf.FloorToInt(totalVertices * density));
 
-        int gridSize = Mathf.CeilToInt(Mathf.Sqrt(desiredPointCount));
-        int gridWidth = gridSize;
-        int gridHeight = gridSize;
+        List<Vector3> sampledPoints = new List<Vector3>();
+        List<Vector3> sampledNormals = new List<Vector3>();
 
-        float rangeAxis1 = axis1 == "X" ? boundsRange.x : axis1 == "Y" ? boundsRange.y : boundsRange.z;
-        float rangeAxis2 = axis2 == "X" ? boundsRange.x : axis2 == "Y" ? boundsRange.y : boundsRange.z;
-        float cellWidth = rangeAxis1 / gridWidth;
-        float cellHeight = rangeAxis2 / gridHeight;
-
-        List<Vector3>[,] grid = new List<Vector3>[gridWidth, gridHeight];
-        List<Vector3>[,] normalGrid = new List<Vector3>[gridWidth, gridHeight]; // To store normals for each grid cell
-        for (int i = 0; i < gridWidth; i++)
+        if (is2D)
         {
-            for (int j = 0; j < gridHeight; j++)
+            // Use original 2D grid approach for flat surfaces
+            string axis1, axis2, fixedAxis;
+            if (boundsRange.x <= boundsRange.y && boundsRange.x <= boundsRange.z)
             {
-                grid[i, j] = new List<Vector3>();
-                normalGrid[i, j] = new List<Vector3>();
+                axis1 = "Y"; axis2 = "Z"; fixedAxis = "X";
+            }
+            else if (boundsRange.y <= boundsRange.x && boundsRange.y <= boundsRange.z)
+            {
+                axis1 = "X"; axis2 = "Z"; fixedAxis = "Y";
+            }
+            else
+            {
+                axis1 = "X"; axis2 = "Y"; fixedAxis = "Z";
+            }
+
+            Debug.Log($"Using 2D grid on plane: {axis1}-{axis2}, fixed axis: {fixedAxis}");
+
+            int gridSize = Mathf.CeilToInt(Mathf.Sqrt(desiredPointCount));
+            int gridWidth = gridSize;
+            int gridHeight = gridSize;
+
+            float rangeAxis1 = axis1 == "X" ? boundsRange.x : axis1 == "Y" ? boundsRange.y : boundsRange.z;
+            float rangeAxis2 = axis2 == "X" ? boundsRange.x : axis2 == "Y" ? boundsRange.y : boundsRange.z;
+            float cellWidth = rangeAxis1 / gridWidth;
+            float cellHeight = rangeAxis2 / gridHeight;
+
+            List<Vector3>[,] grid = new List<Vector3>[gridWidth, gridHeight];
+            List<Vector3>[,] normalGrid = new List<Vector3>[gridWidth, gridHeight];
+            for (int i = 0; i < gridWidth; i++)
+            {
+                for (int j = 0; j < gridHeight; j++)
+                {
+                    grid[i, j] = new List<Vector3>();
+                    normalGrid[i, j] = new List<Vector3>();
+                }
+            }
+
+            for (int i = 0; i < worldVertices.Count; i++)
+            {
+                Vector3 vertex = worldVertices[i];
+                Vector3 normal = worldNormals[i];
+
+                float value1 = axis1 == "X" ? vertex.x : axis1 == "Y" ? vertex.y : vertex.z;
+                float value2 = axis2 == "X" ? vertex.x : axis2 == "Y" ? vertex.y : vertex.z;
+
+                int gridX = Mathf.FloorToInt((value1 - (axis1 == "X" ? minBounds.x : axis1 == "Y" ? minBounds.y : minBounds.z)) / cellWidth);
+                int gridY = Mathf.FloorToInt((value2 - (axis2 == "X" ? minBounds.x : axis2 == "Y" ? minBounds.y : minBounds.z)) / cellHeight);
+
+                gridX = Mathf.Clamp(gridX, 0, gridWidth - 1);
+                gridY = Mathf.Clamp(gridY, 0, gridHeight - 1);
+
+                grid[gridX, gridY].Add(vertex);
+                normalGrid[gridX, gridY].Add(normal);
+            }
+
+            for (int i = 0; i < gridWidth; i++)
+            {
+                for (int j = 0; j < gridHeight; j++)
+                {
+                    if (grid[i, j].Count > 0)
+                    {
+                        Vector3 averagePosition = Vector3.zero;
+                        Vector3 averageNormal = Vector3.zero;
+                        foreach (Vector3 vertex in grid[i, j])
+                        {
+                            averagePosition += vertex;
+                        }
+                        foreach (Vector3 normal in normalGrid[i, j])
+                        {
+                            averageNormal += normal;
+                        }
+                        averagePosition /= grid[i, j].Count;
+                        averageNormal = (averageNormal / normalGrid[i, j].Count).normalized;
+                        sampledPoints.Add(averagePosition);
+                        sampledNormals.Add(averageNormal);
+                    }
+                }
             }
         }
-
-        for (int i = 0; i < worldVertices.Count; i++)
+        else
         {
-            Vector3 vertex = worldVertices[i];
-            Vector3 normal = worldNormals[i];
+            // Use 3D voxel grid for complex 3D surfaces
+            Debug.Log("Using 3D voxel grid for sampling");
 
-            float value1 = axis1 == "X" ? vertex.x : axis1 == "Y" ? vertex.y : vertex.z;
-            float value2 = axis2 == "X" ? vertex.x : axis2 == "Y" ? vertex.y : vertex.z;
+            int voxelSize = Mathf.CeilToInt(Mathf.Pow(desiredPointCount, 1f / 3f)); // Approximate cube root
+            float voxelWidth = boundsRange.x / voxelSize;
+            float voxelHeight = boundsRange.y / voxelSize;
+            float voxelDepth = boundsRange.z / voxelSize;
 
-            int gridX = Mathf.FloorToInt((value1 - (axis1 == "X" ? minBounds.x : axis1 == "Y" ? minBounds.y : minBounds.z)) / cellWidth);
-            int gridY = Mathf.FloorToInt((value2 - (axis2 == "X" ? minBounds.x : axis2 == "Y" ? minBounds.y : minBounds.z)) / cellHeight);
-
-            gridX = Mathf.Clamp(gridX, 0, gridWidth - 1);
-            gridY = Mathf.Clamp(gridY, 0, gridHeight - 1);
-
-            grid[gridX, gridY].Add(vertex);
-            normalGrid[gridX, gridY].Add(normal);
-        }
-
-        List<Vector3> sampledPoints = new List<Vector3>();
-        List<Vector3> sampledNormals = new List<Vector3>(); // To store the average normal for each sampled point
-        for (int i = 0; i < gridWidth; i++)
-        {
-            for (int j = 0; j < gridHeight; j++)
+            List<Vector3>[,,] voxelGrid = new List<Vector3>[voxelSize, voxelSize, voxelSize];
+            List<Vector3>[,,] normalVoxelGrid = new List<Vector3>[voxelSize, voxelSize, voxelSize];
+            for (int i = 0; i < voxelSize; i++)
             {
-                if (grid[i, j].Count > 0)
+                for (int j = 0; j < voxelSize; j++)
                 {
-                    Vector3 averagePosition = Vector3.zero;
-                    Vector3 averageNormal = Vector3.zero;
-                    foreach (Vector3 vertex in grid[i, j])
+                    for (int k = 0; k < voxelSize; k++)
                     {
-                        averagePosition += vertex;
+                        voxelGrid[i, j, k] = new List<Vector3>();
+                        normalVoxelGrid[i, j, k] = new List<Vector3>();
                     }
-                    foreach (Vector3 normal in normalGrid[i, j])
+                }
+            }
+
+            // Assign vertices to 3D voxels
+            for (int i = 0; i < worldVertices.Count; i++)
+            {
+                Vector3 vertex = worldVertices[i];
+                Vector3 normal = worldNormals[i];
+
+                int voxelX = Mathf.FloorToInt((vertex.x - minBounds.x) / voxelWidth);
+                int voxelY = Mathf.FloorToInt((vertex.y - minBounds.y) / voxelHeight);
+                int voxelZ = Mathf.FloorToInt((vertex.z - minBounds.z) / voxelDepth);
+
+                voxelX = Mathf.Clamp(voxelX, 0, voxelSize - 1);
+                voxelY = Mathf.Clamp(voxelY, 0, voxelSize - 1);
+                voxelZ = Mathf.Clamp(voxelZ, 0, voxelSize - 1);
+
+                voxelGrid[voxelX, voxelY, voxelZ].Add(vertex);
+                normalVoxelGrid[voxelX, voxelY, voxelZ].Add(normal);
+            }
+
+            // Sample points from non-empty voxels
+            for (int i = 0; i < voxelSize; i++)
+            {
+                for (int j = 0; j < voxelSize; j++)
+                {
+                    for (int k = 0; k < voxelSize; k++)
                     {
-                        averageNormal += normal;
+                        if (voxelGrid[i, j, k].Count > 0)
+                        {
+                            Vector3 averagePosition = Vector3.zero;
+                            Vector3 averageNormal = Vector3.zero;
+                            foreach (Vector3 vertex in voxelGrid[i, j, k])
+                            {
+                                averagePosition += vertex;
+                            }
+                            foreach (Vector3 normal in normalVoxelGrid[i, j, k])
+                            {
+                                averageNormal += normal;
+                            }
+                            averagePosition /= voxelGrid[i, j, k].Count;
+                            averageNormal = (averageNormal / voxelGrid[i, j, k].Count).normalized;
+                            sampledPoints.Add(averagePosition);
+                            sampledNormals.Add(averageNormal);
+                        }
                     }
-                    averagePosition /= grid[i, j].Count;
-                    averageNormal = (averageNormal / normalGrid[i, j].Count).normalized; // Normalize the average normal
-                    sampledPoints.Add(averagePosition);
-                    sampledNormals.Add(averageNormal);
                 }
             }
         }
 
+        // Ensure at least two points
         if (sampledPoints.Count < 2)
         {
             Debug.LogWarning("Too few points sampled. Adding a second point to enable path generation.");
@@ -256,26 +331,70 @@ public class PathManager : MonoBehaviour
             }
         }
 
-        // Apply offset along the normal and instantiate path points
+        // Apply offset and instantiate path points
         for (int i = 0; i < sampledPoints.Count; i++)
         {
             Vector3 pointPosition = sampledPoints[i];
             Vector3 normal = sampledNormals[i];
-            // Offset the point along the normal by the specified distance
             pointPosition += normal * offsetFromSurface;
 
             GameObject pathPoint = GetPathPointFromPool();
             pathPoint.transform.position = pointPosition;
             pathPoint.SetActive(true);
 
-            // Update the sampledPoints list with the offset position for path generation
             sampledPoints[i] = pointPosition;
         }
 
-        SortPoints(sampledPoints);
+        // Sort points (replace with a 3D-friendly approach)
+        SortPoints3D(sampledPoints);
 
         isPulsing = true;
         pulseTime = 0f;
+    }
+
+    private void SortPoints3D(List<Vector3> pathPoints)
+    {
+        orderedPath.Clear();
+        if (pathPoints.Count == 0) return;
+
+        // Start with the first point
+        List<Vector3> remainingPoints = new List<Vector3>(pathPoints);
+        Vector3 currentPoint = remainingPoints[0];
+        orderedPath.Add(currentPoint);
+        remainingPoints.RemoveAt(0);
+
+        // Connect to the nearest unvisited point
+        while (remainingPoints.Count > 0)
+        {
+            int nearestIndex = 0;
+            float minDistance = float.MaxValue;
+
+            for (int i = 0; i < remainingPoints.Count; i++)
+            {
+                float distance = Vector3.Distance(currentPoint, remainingPoints[i]);
+                if (distance < minDistance)
+                {
+                    minDistance = distance;
+                    nearestIndex = i;
+                }
+            }
+
+            currentPoint = remainingPoints[nearestIndex];
+            orderedPath.Add(currentPoint);
+            remainingPoints.RemoveAt(nearestIndex);
+        }
+
+        // Update LineRenderer
+        if (showPath && orderedPath.Count > 1)
+        {
+            pathLineRenderer.positionCount = orderedPath.Count;
+            pathLineRenderer.SetPositions(orderedPath.ToArray());
+            pathLineRenderer.colorGradient = CreateGradient(unpassedColor, unpassedColor);
+        }
+        else
+        {
+            pathLineRenderer.positionCount = 0;
+        }
     }
 
     GameObject GetPathPointFromPool()
