@@ -4,7 +4,7 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
 
-public class PathManager : MonoBehaviour
+public class PathManager_Legacy : MonoBehaviour
 {
     public GameObject pathPointPrefab;
     public GameObject targetObject;
