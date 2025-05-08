@@ -6,6 +6,8 @@ public class APi_Manager : MonoBehaviour
 {
     public string getLatestUrl = "http://localhost:5297/robot/get-latest";
     public string moveResetUrl = "http://localhost:5297/robot/move?direction=none";
+
+    public Transform targetRobotEndPoint;
     void Start()
     {
         StartCoroutine(PollRobotMovement());
@@ -27,7 +29,7 @@ public class APi_Manager : MonoBehaviour
                 Debug.Log($"Received command: {direction}");
                 if (!string.IsNullOrEmpty(direction) && direction != "none")
                 {
-                    MoveRobot(direction);
+                    MoveRobotEndPoint(direction);
 
                     // 2. After moving, reset the command
                     UnityWebRequest resetRequest = UnityWebRequest.PostWwwForm(moveResetUrl, "");
@@ -45,7 +47,7 @@ public class APi_Manager : MonoBehaviour
 
 
     public float moveSpeed = 2f;
-    void MoveRobot(string direction)
+    void MoveRobotEndPoint(string direction)
     {   
         Vector3 move = Vector3.zero;
 
@@ -56,7 +58,7 @@ public class APi_Manager : MonoBehaviour
         else if (direction == "raise") move = Vector3.up; 
         else if (direction == "down") move = Vector3.down;
 
-        transform.Translate(move * moveSpeed * Time.deltaTime);
+        targetRobotEndPoint.Translate(move * moveSpeed * Time.deltaTime);
     }
 
     [System.Serializable]
